@@ -150,7 +150,14 @@
       in
       rec {
         packages = listToAttrs (map ({ target, ... }@t: { name = "compcert-" + target; value = buildCompcert t; }) targetsFinal);
-        checks = packages;
-        hydraJobs = packages; # // checks;
+
+        checks = {
+          nixpkgs-fmt = pkgs.runCommand "nixpkgs-fmt"
+            {
+              nativeBuildInputs = [ pkgs.nixpkgs-fmt ];
+            } "nixpkgs-fmt --check ${./.}; touch $out";
+        };
+
+        hydraJobs = packages // checks;
       });
 }
