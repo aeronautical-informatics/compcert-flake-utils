@@ -116,7 +116,8 @@
         # - target: the target to build for. Run ./configure -help to get a list of targets
         # - targetCc: a C-compiler for the target. This
         buildCompcert = { target, targetCc }: pkgs.stdenv.mkDerivation {
-          name = "CompCert-${target}";
+          pname = "CompCert-${target}";
+          version = "3.13.1";
           src = compcert;
           nativeBuildInputs = with pkgs; [
             coq_8_16
@@ -132,7 +133,17 @@
               -toolprefix ${targetCc.targetPrefix} \
               ${target}
           '';
+
           enableParallelBuilding = true;
+
+          meta = with lib; {
+            description = "The CompCert C verified compiler, a high-assurance compiler";
+            homepage = "https://compcert.org/";
+            license = licenses.unfree;
+            platforms = platforms.all;
+            maintainers = with maintainers; [ wucke13 ];
+            changelog = "https://github.com/htop-dev/htop/blob/${version}/Changelog.md";
+          };
         };
 
         inherit (builtins) listToAttrs map;
@@ -141,6 +152,5 @@
         packages = listToAttrs (map ({ target, ... }@t: { name = "compcert-" + target; value = buildCompcert t; }) targetsFinal);
         checks = packages;
         hydraJobs = packages; # // checks;
-
       });
 }
