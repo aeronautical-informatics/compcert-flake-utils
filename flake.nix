@@ -8,11 +8,15 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, compcert }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "x86_64-darwin" "x86_64-windows" ] (system:
       let
         inherit (nixpkgs) lib;
 
-        pkgs = nixpkgs.legacyPackages.${system};
+        inherit (builtins) listToAttrs map;
+
+        pkgs = import nixpkgs {
+          inherit system;
+        };
 
         # get targets:
         # ./configure -help | awk '/Supported targets:/,/^$/ {if ($1 == "Supported" || $1 == "") next; printf "\"%s\" # ", $1; for (i = 2; i <= NF; i++) printf "%s ", $i; printf "\n"} {next}'
@@ -34,13 +38,13 @@
           "x86_32-bsd" # (x86 32 bits, BSD)
           "x86_64-linux" # (x86 64 bits, Linux)
           "x86_64-bsd" # (x86 64 bits, BSD)
-          "x86_64-macos" # (x86 64 bits, MacOS X)
+          # "x86_64-macos" # (x86 64 bits, MacOS X)
           "x86_64-cygwin" # (x86 64 bits, Cygwin environment under Windows)
           "rv32-linux" # (RISC-V 32 bits, Linux)
           "rv64-linux" # (RISC-V 64 bits, Linux)
           "aarch64-linux" # (AArch64, i.e. ARMv8 in 64-bit mode, Linux)
-          "aarch64-macos" # (AArch64, i.e. Apple silicon, MacOS)
-        ];
+          # "aarch64-macos" # (AArch64, i.e. Apple silicon, MacOS)
+        ] ++ (lib.optionals pkgs.targetPlatform.isDarwin [ "x86_64-macos" "aarch64-macos" ]);
 
         refinements = {
           arm = [
@@ -150,8 +154,6 @@
             changelog = "https://github.com/htop-dev/htop/blob/${version}/Changelog.md";
           };
         };
-
-        inherit (builtins) listToAttrs map;
       in
       rec {
         packages = listToAttrs (map ({ target, ... }@t: { name = "compcert-" + target; value = buildCompcert t; }) targetsFinal);
