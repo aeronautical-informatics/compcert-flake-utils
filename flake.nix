@@ -39,7 +39,7 @@
           "rv32-linux" # (RISC-V 32 bits, Linux)
           "rv64-linux" # (RISC-V 64 bits, Linux)
           "aarch64-linux" # (AArch64, i.e. ARMv8 in 64-bit mode, Linux)
-          # "aarch64-macos" # (AArch64, i.e. Apple silicon, MacOS)
+          "aarch64-macos" # (AArch64, i.e. Apple silicon, MacOS)
         ];
 
         refinements = {
@@ -73,6 +73,10 @@
           rv32 = "riscv32-embedded";
           rv64 = "riscv64-embedded";
           aarch64 = "aarch64-embedded";
+
+          # take precedence
+          aarch64-macos = "aarch64-darwin";
+          x86_64-macos = "x86_64-darwin";
         };
 
         # takes one target and generates a list including the target and all
@@ -85,10 +89,11 @@
             # prefix of a target, i. e. "arm" for "arm-eabihf"
             targetPrefix = elemAt (splitString "-" baseTarget) 0;
 
+            # name of the pkgs in pkgs.pkgsCross for baseTarget
+            stdenvKey = if stdenvMap ? ${baseTarget} then baseTarget else targetPrefix;
+
             # Nix stdenv for the specific target
-            targetStdenv =
-              if baseTarget == "aarch64-macos"
-              then pkgs.pkgsCross.aarch64-darwin else pkgs.pkgsCross.${stdenvMap.${targetPrefix}}.stdenv;
+            targetStdenv = pkgs.pkgsCross.${stdenvMap.${stdenvKey}}.stdenv;
 
             # target name without a prefix, i.e "eabihf" for "arm-eabihf"
             targetWithoutPrefix = removePrefix "${targetPrefix}-" baseTarget;
