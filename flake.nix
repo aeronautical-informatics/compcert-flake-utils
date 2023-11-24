@@ -155,15 +155,59 @@
             changelog = "https://github.com/htop-dev/htop/blob/${version}/Changelog.md";
           };
         };
+
+        cross-pkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
+        cross-cc = cross-pkgs.wrapCCWith {
+          cc = self.packages.${system}.compcert-aarch64-linux;
+          inherit (cross-pkgs.stdenv.cc) bintools libc;
+          name = "ccomp";
+          # NOTE $out/nix-support/cc-cflags for extra flags
+          # NOTE as well cc-ldflags
+          # noLibc = true;
+        };
+        # cross-cc = cross-pkgs.stdenv.cc.override {
+        #   name = "ccomp";
+        #   extraPackages = [
+        #     compcert-utils.packages.${system}.compcert-aarch64-linux
+        #   ];
+        # };
+        cross-stdenv = cross-pkgs.overrideCC cross-pkgs.stdenv cross-cc;
       in
       rec {
         packages = listToAttrs (map ({ target, ... }@t: { name = "compcert-" + target; value = buildCompcert t; }) targetsFinal);
+
+        devShells.default = pkgs.mkShellNoCC {
+          # Lessons learned
+          # ccomp wants a aarch64-none-elf-gcc
+          #
+          # ccomp -c main.c -o main.o -I$(nix-get-store-path pkgsCross.aarch64-multiplatform-musl.stdenv.cc.libc_dev)/include
+          #
+          # aarch64-unknown-linux-musl-gcc -static -o main main.o
+          nativeBuildInputs = [
+            pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc
+            pkgs.pkgsCross.aarch64-embedded.stdenv.cc.cc
+            packages.compcert-aarch64-linux
+          ];
+        };
 
         checks = {
           nixpkgs-fmt = pkgs.runCommand "nixpkgs-fmt"
             {
               nativeBuildInputs = [ pkgs.nixpkgs-fmt ];
             } "nixpkgs-fmt --check ${./.}; touch $out";
+          example_1 = cross-stdenv.mkDerivation {
+            name = "example";
+            src = ./example;
+            buildPhase = ''
+              runHook preInstall
+
+              mkdir --parent -- $out/bin
+              echo $CC
+              $CC test_1.c -o $out/bin/test_1
+
+              runHook postInstall
+            '';
+          };
         };
 
         hydraJobs = packages // checks;
