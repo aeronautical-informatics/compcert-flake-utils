@@ -7,8 +7,9 @@
     compcert.flake = false;
   };
 
+
   outputs = { self, nixpkgs, flake-utils, compcert }:
-    flake-utils.lib.eachSystem [ "x86_64-linux" "x86_64-darwin" "x86_64-windows" ] (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" ] (system: # "aarch64-linux"
       let
         inherit (nixpkgs) lib;
 
@@ -100,6 +101,9 @@
             # Nix stdenv for the specific target
             targetStdenv = pkgs.pkgsCross.${stdenvMap.${stdenvKey}}.stdenv;
 
+            # Nix stdenv without any Cc for the specific target
+            targetStdenvNoCC = pkgs.pkgsCross.${stdenvMap.${stdenvKey}}.stdenvNoCC;
+
             # target name without a prefix, i.e "eabihf" for "arm-eabihf"
             targetWithoutPrefix = removePrefix "${targetPrefix}-" baseTarget;
 
@@ -145,36 +149,65 @@
           '';
 
           enableParallelBuilding = true;
-
+          passthru = { inherit targetCc; };
           meta = with lib; {
             description = "The CompCert C verified compiler, a high-assurance compiler";
             homepage = "https://compcert.org/";
             license = licenses.unfree;
             platforms = platforms.all;
             maintainers = with maintainers; [ wucke13 ];
-            changelog = "https://github.com/htop-dev/htop/blob/${version}/Changelog.md";
+            changelog = "https://github.com/AbsInt/CompCert/blob/master/Changelog.md";
           };
         };
 
+        wrapCompcert = { ccompDrv, stdenv }: pkgs.stdenvNoCC.mkDerivation {
+          name = "compcert-wrapped";
+          dontUnpack = true;
+          dontBuild = true;
+          nativeBuildInputs = with pkgs; [ makeWrapper ];
+          installPhase = ''
+            mkdir --parent -- $out/{bin,nix-support}
+            makeWrapper ${ccompDrv}/bin/ccomp $out/bin/ccomp \
+              --suffix PATH : ${lib.makeBinPath [ ccompDrv.targetCc.cc ]} \
+              --add-flags '-I${lib.getDev stdenv.cc.libc}/include' \
+              --add-flags '-T ${ccompDrv.targetCc.cc}/bin/${ccompDrv.targetCc.targetPrefix}gcc'
+            echo "export CC=$out/bin/ccomp" > $out/nix-support/setup-hook
+          '';
+        };
+
         cross-pkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
-        cross-cc = cross-pkgs.wrapCCWith {
+
+        # this is really finicky, not sure if we should use it
+        cross-cc = (pkgs.wrapCCWith rec {
           cc = self.packages.${system}.compcert-aarch64-linux;
           inherit (cross-pkgs.stdenv.cc) bintools libc;
           name = "ccomp";
           # NOTE $out/nix-support/cc-cflags for extra flags
           # NOTE as well cc-ldflags
-          # noLibc = true;
+        }).overrideAttrs (oldAttrs: {
+          # wrap ${targetPrefix}cc $wrapper $ccPath/${targetPrefix}gcc
+          # pkgs/build-support/cc-wrapper/cc-wrapper.sh does only support wrapping gcc or clang.
+          # Therefore we have to do some 
+          installPhase = oldAttrs.installPhase + ''
+            set -x
+            wrap cc $wrapper $ccPath/ccomp
+          '';
+        });
+
+        cross-cc-homemade = wrapCompcert {
+          ccompDrv = self.packages.${system}.compcert-aarch64-linux;
+          stdenv = cross-pkgs.stdenv;
         };
-        # cross-cc = cross-pkgs.stdenv.cc.override {
-        #   name = "ccomp";
-        #   extraPackages = [
-        #     compcert-utils.packages.${system}.compcert-aarch64-linux
-        #   ];
-        # };
-        cross-stdenv = cross-pkgs.overrideCC cross-pkgs.stdenv cross-cc;
+
+        cross-stdenv = cross-pkgs.overrideCC cross-pkgs.stdenv cross-cc-homemade;
       in
       rec {
-        packages = listToAttrs (map ({ target, ... }@t: { name = "compcert-" + target; value = buildCompcert t; }) targetsFinal);
+        packages = listToAttrs (map
+          ({ target, ... }@t: {
+            name = "compcert-" + target;
+            value = buildCompcert t;
+          })
+          targetsFinal);
 
         devShells.default = pkgs.mkShellNoCC {
           # Lessons learned
@@ -195,6 +228,7 @@
             {
               nativeBuildInputs = [ pkgs.nixpkgs-fmt ];
             } "nixpkgs-fmt --check ${./.}; touch $out";
+          inherit cross-cc cross-cc-homemade;
           example_1 = cross-stdenv.mkDerivation {
             name = "example";
             src = ./example;
@@ -203,7 +237,9 @@
 
               mkdir --parent -- $out/bin
               echo $CC
-              $CC test_1.c -o $out/bin/test_1
+              $CC -version
+              # which $CC
+              $CC -c -v  test_1.c -o $out/bin/test_1
 
               runHook postInstall
             '';
