@@ -117,7 +117,7 @@
           map
             (refinedTarget: {
               target = refinedTarget;
-              targetCc = targetStdenv.cc;
+              targetCC = targetStdenv.cc;
             })
             refinedTargets;
 
@@ -128,8 +128,8 @@
         #
         # args:
         # - target: the target to build for. Run ./configure -help to get a list of targets
-        # - targetCc: a C-compiler for the target. This
-        buildCompcert = { target, targetCc }: pkgs.stdenv.mkDerivation {
+        # - targetCC: a C-compiler for the target. This unfortunately required, ccomp can not generate binaries completely alone, it needs another C compiler and its bintools.
+        buildCompcert = { target, targetCC }: pkgs.stdenv.mkDerivation {
           pname = "CompCert-${target}";
           version = "3.13.1";
           src = compcert;
@@ -139,17 +139,26 @@
             ocamlPackages.menhir
             ocamlPackages.menhirLib
             ocamlPackages.findlib
-            targetCc
+            # really must be targetCC, not targetCC.cc! We also need the targetCC bintools etc.
+            targetCC
+            # makeWrapper
           ];
 
           configurePhase = ''
             ./configure -prefix $out \
-              -toolprefix ${targetCc.targetPrefix} \
+              -toolprefix ${targetCC.targetPrefix} \
               ${target}
           '';
 
+          # ccomp needs an actual gcc in order to generate the final binaries
+          # postFixup = ''
+          #   wrapProgram $out/bin/ccomp \
+          #     --suffix PATH : ${lib.makeBinPath [ targetCC ]} \
+          #     --add-flags '-T ${targetCC.cc}/bin/${targetCC.targetPrefix}ld'
+          # '';
+
           enableParallelBuilding = true;
-          passthru = { inherit targetCc; };
+          passthru = { inherit targetCC; };
           meta = with lib; {
             description = "The CompCert C verified compiler, a high-assurance compiler";
             homepage = "https://compcert.org/";
@@ -168,38 +177,52 @@
           installPhase = ''
             mkdir --parent -- $out/{bin,nix-support}
             makeWrapper ${ccompDrv}/bin/ccomp $out/bin/ccomp \
-              --suffix PATH : ${lib.makeBinPath [ ccompDrv.targetCc.cc ]} \
-              --add-flags '-I${lib.getDev stdenv.cc.libc}/include' \
-              --add-flags '-T ${ccompDrv.targetCc.cc}/bin/${ccompDrv.targetCc.targetPrefix}gcc'
-            echo "export CC=$out/bin/ccomp" > $out/nix-support/setup-hook
+              --suffix PATH : ${lib.makeBinPath [ ccompDrv.targetCC.cc ]}
           '';
+          # --add-flags '-T ${ccompDrv.targetCC.cc}/bin/${ccompDrv.targetCC.targetPrefix}gcc'
+          # --add-flags '-I${lib.getDev stdenv.cc.libc}/include' \
         };
 
         cross-pkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
 
         # this is really finicky, not sure if we should use it
-        cross-cc = (pkgs.wrapCCWith rec {
-          cc = self.packages.${system}.compcert-aarch64-linux;
+        cross-cc = pkgs.wrapCCWith rec {
+          inherit (cross-pkgs) stdenvNoCC;
           inherit (cross-pkgs.stdenv.cc) bintools libc;
+
+          cc = wrapCompcert { ccompDrv = self.packages.${system}.compcert-aarch64-linux; stdenv = null; };
           name = "ccomp";
           # NOTE $out/nix-support/cc-cflags for extra flags
           # NOTE as well cc-ldflags
-        }).overrideAttrs (oldAttrs: {
-          # wrap ${targetPrefix}cc $wrapper $ccPath/${targetPrefix}gcc
-          # pkgs/build-support/cc-wrapper/cc-wrapper.sh does only support wrapping gcc or clang.
-          # Therefore we have to do some 
-          installPhase = oldAttrs.installPhase + ''
-            set -x
-            wrap cc $wrapper $ccPath/ccomp
-          '';
-        });
 
-        cross-cc-homemade = wrapCompcert {
-          ccompDrv = self.packages.${system}.compcert-aarch64-linux;
-          stdenv = cross-pkgs.stdenv;
+          # pkgs/build-support/cc-wrapper/cc-wrapper.sh does only support wrapping gcc or clang.
+          # Therefore we have to as for ccomp wrapping ourself.
+          #
+          # ccomp does not understand the -B flag
+          extraBuildCommands = ''
+            wrap ${stdenvNoCC.hostPlatform.config}-cc $wrapper $ccPath/ccomp
+            sed '/-B/d' -i $out/nix-support/{add-flags.sh,cc-cflags,libc-crt1-cflags}
+          '';
+          # shopt -s extglob
+          # NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE//-frandom-seed=+([[:alnum:]])}"
+          # shopt -u extglob
+
+          nixSupport.setup-hook =
+            lib.strings.escapeShellArg (builtins.map (x: x + "\n") [
+              "export CC=${stdenvNoCC.hostPlatform.config}-cc"
+
+              # compcert does not understand the -frandom-seed flag, thus we silently discard it from NIX_CFLAGS_COMPILE
+              "shopt -s extglob"
+              "NIX_CFLAGS_COMPILE=${ "\"\${NIX_CFLAGS_COMPILE//-frandom-seed=+([[:alnum:]])}" }\""
+              "shopt -u extglob"
+
+
+              # "NIX_CFLAGS_COMPILE=\"-T ${cc.targetCC}/bin/${cc.targetCC.targetPrefix}ld $NIX_CFLAGS_COMPILE\""
+              # "export PATH=\"$PATH:${cc.targetCC}/bin/\""
+            ]);
         };
 
-        cross-stdenv = cross-pkgs.overrideCC cross-pkgs.stdenv cross-cc-homemade;
+        cross-stdenv = cross-pkgs.overrideCC cross-pkgs.stdenv cross-cc;
       in
       rec {
         packages = listToAttrs (map
@@ -215,11 +238,14 @@
           #
           # ccomp -c main.c -o main.o -I$(nix-get-store-path pkgsCross.aarch64-multiplatform-musl.stdenv.cc.libc_dev)/include
           #
-          # aarch64-unknown-linux-musl-gcc -static -o main main.o
+          # aarch64-unknown-linux-musl-gcc -static -o main main.oi
+          NIX_CFLAGS_COMPILE = "";
+          hardeningDisable = [ "all" ];
           nativeBuildInputs = [
-            pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc
-            pkgs.pkgsCross.aarch64-embedded.stdenv.cc.cc
-            packages.compcert-aarch64-linux
+            # pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc
+            # pkgs.pkgsCross.aarch64-embedded.stdenv.cc.cc
+            # packages.compcert-aarch64-linux
+            pkgs.qemu
           ];
         };
 
@@ -228,18 +254,22 @@
             {
               nativeBuildInputs = [ pkgs.nixpkgs-fmt ];
             } "nixpkgs-fmt --check ${./.}; touch $out";
-          inherit cross-cc cross-cc-homemade;
+          inherit cross-cc; # cross-cc-homemade;
           example_1 = cross-stdenv.mkDerivation {
             name = "example";
             src = ./example;
+            hardeningDisable = [ "all" ];
             buildPhase = ''
               runHook preInstall
 
               mkdir --parent -- $out/bin
-              echo $CC
+
+              set -x
+              # make sure we use the right C-compiler, ccomp
               $CC -version
-              # which $CC
-              $CC -c -v  test_1.c -o $out/bin/test_1
+
+              $CC -v test_1.c -o $out/bin/test_1
+              set +x
 
               runHook postInstall
             '';
@@ -249,3 +279,4 @@
         hydraJobs = packages // checks;
       });
 }
+
