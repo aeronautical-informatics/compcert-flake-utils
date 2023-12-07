@@ -78,7 +78,7 @@
           x86_64 = "x86_64-embedded";
           rv32 = "riscv32-embedded";
           rv64 = "riscv64-embedded";
-          aarch64 = "aarch64-embedded";
+          aarch64 = "aarch64-multiplatform-musl";
 
           # take precedence
           aarch64-macos = "aarch64-darwin";
@@ -141,7 +141,6 @@
             ocamlPackages.findlib
             # really must be targetCC, not targetCC.cc! We also need the targetCC bintools etc.
             targetCC
-            # makeWrapper
           ];
 
           configurePhase = ''
@@ -149,13 +148,6 @@
               -toolprefix ${targetCC.targetPrefix} \
               ${target}
           '';
-
-          # ccomp needs an actual gcc in order to generate the final binaries
-          # postFixup = ''
-          #   wrapProgram $out/bin/ccomp \
-          #     --suffix PATH : ${lib.makeBinPath [ targetCC ]} \
-          #     --add-flags '-T ${targetCC.cc}/bin/${targetCC.targetPrefix}ld'
-          # '';
 
           enableParallelBuilding = true;
           passthru = { inherit targetCC; };
@@ -175,12 +167,12 @@
           dontBuild = true;
           nativeBuildInputs = with pkgs; [ makeWrapper ];
           installPhase = ''
+            # TODO this can help us remove the makeWrapper
+            # sed 's|^linker=.*$|linker=${ccompDrv.targetCC}/bin/${ccompDrv.targetCC.targetPrefix}ld|' -i $out/share/compcert.ini
             mkdir --parent -- $out/{bin,nix-support}
             makeWrapper ${ccompDrv}/bin/ccomp $out/bin/ccomp \
               --suffix PATH : ${lib.makeBinPath [ ccompDrv.targetCC.cc ]}
           '';
-          # --add-flags '-T ${ccompDrv.targetCC.cc}/bin/${ccompDrv.targetCC.targetPrefix}gcc'
-          # --add-flags '-I${lib.getDev stdenv.cc.libc}/include' \
         };
 
         cross-pkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
@@ -198,14 +190,11 @@
           # pkgs/build-support/cc-wrapper/cc-wrapper.sh does only support wrapping gcc or clang.
           # Therefore we have to as for ccomp wrapping ourself.
           #
-          # ccomp does not understand the -B flag
+          # ccomp does not understand the -B flag that is why we change it to -WUL,-B so that ccomp passes it to the underlying gcc
           extraBuildCommands = ''
             wrap ${stdenvNoCC.hostPlatform.config}-cc $wrapper $ccPath/ccomp
-            sed '/-B/d' -i $out/nix-support/{add-flags.sh,cc-cflags,libc-crt1-cflags}
+            sed 's|-B|-WUl,-B|g' -i $out/nix-support/{add-flags.sh,cc-cflags,libc-crt1-cflags}
           '';
-          # shopt -s extglob
-          # NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE//-frandom-seed=+([[:alnum:]])}"
-          # shopt -u extglob
 
           nixSupport.setup-hook =
             lib.strings.escapeShellArg (builtins.map (x: x + "\n") [
@@ -215,10 +204,6 @@
               "shopt -s extglob"
               "NIX_CFLAGS_COMPILE=${ "\"\${NIX_CFLAGS_COMPILE//-frandom-seed=+([[:alnum:]])}" }\""
               "shopt -u extglob"
-
-
-              # "NIX_CFLAGS_COMPILE=\"-T ${cc.targetCC}/bin/${cc.targetCC.targetPrefix}ld $NIX_CFLAGS_COMPILE\""
-              # "export PATH=\"$PATH:${cc.targetCC}/bin/\""
             ]);
         };
 
@@ -254,8 +239,9 @@
             {
               nativeBuildInputs = [ pkgs.nixpkgs-fmt ];
             } "nixpkgs-fmt --check ${./.}; touch $out";
-          inherit cross-cc; # cross-cc-homemade;
+          inherit cross-cc;
           example_1 = cross-stdenv.mkDerivation {
+            # example_1 = cross-pkgs.stdenv.mkDerivation {
             name = "example";
             src = ./example;
             hardeningDisable = [ "all" ];
@@ -266,6 +252,7 @@
 
               set -x
               # make sure we use the right C-compiler, ccomp
+              ${pkgs.unixtools.whereis}/bin/whereis $CC
               $CC -version
 
               $CC -v test_1.c -o $out/bin/test_1
@@ -279,4 +266,7 @@
         hydraJobs = packages // checks;
       });
 }
+
+
+
 
